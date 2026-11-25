@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
-"""The World on Wednesday 25 November 2026, in one picture.
+"""ONE PAGE WORLD - the day's world news on a single page.
 
-Entry for make.fun's "Sum up 25 November's world news in one image"
-bounty.  Running this program writes one PNG infographic to
-$MAKEFUN_OUTPUT_DIR/entry.png (or /output/entry.png when the variable
-is unset).  Python 3.13 standard library only; no network, no clock,
-no randomness: two runs write byte-identical files.
+A self-contained drawing press: every letter and picture below is drawn
+by this program alone (Python standard library only, no network, no
+files read).  Running it writes entry.png into MAKEFUN_OUTPUT_DIR.
 
-The picture is drawn from scratch: a hand-authored vector stroke font
-(each glyph a set of polylines, stroked with round joins and
-distance-based anti-aliasing), scanline shapes and simple scenes,
-rendered at twice the final size and averaged down, then encoded as a
-PNG with zlib.
-
-DRAFT STATE: the NEWS DATA block below still holds yesterday's
-(24 November's) stories as a placeholder, so the draft can be built,
-checked and submitted through the whole pipeline.  The final version
-replaces that whole block -- date line and stories -- with
-25 November's news once the day is complete.  Everything outside the
-block is the press that prints them, and never changes.
+Design notes (this program's own):
+  * Letters are hand-defined stroke paths on a 12-unit cap grid and are
+    painted by measuring, for each pixel near a path, the distance to
+    the nearest stroke segment; coverage fades across one pixel so the
+    letterforms come out smooth instead of dotted.
+  * Filled shapes (rectangles, discs, polygons) are painted with their
+    own analytic or supersampled coverage, on the same canvas.
+  * The page is a broadsheet: masthead with a boxed date, one lead
+    story with a panorama scene, four boxed stories, and a dark
+    "also today" ticker along the foot.
 """
 
 import math
@@ -26,681 +22,567 @@ import os
 import struct
 import zlib
 
-# =====================================================================
-# NEWS DATA -- the whole day lives in this block, and nowhere else.
-# Swap these values in one edit to update the picture; the layout code
-# below never changes.  Text is upper case, like a newspaper poster.
+# ----------------------------------------------------------------------
+# NEWS DATA (placeholder for tonight's draft)
 #
-# PLACEHOLDER: the values below are yesterday's (Tuesday 24 November)
-# stories standing in for the draft.  The final version replaces this
-# whole block -- DAY_NAME, DATE_LINE and every story -- with
-# Wednesday 25 November's news.
-# =====================================================================
-
-DAY_NAME = "TUESDAY"
-DATE_LINE = "24 NOVEMBER 2026"
-KICKER = "THE WORLD IN ONE PICTURE"
-SOURCE_LINE = "AS REPORTED BY REUTERS, AP, AFP AND SCMP"
+# PLACEHOLDER: the five stories and the ticker below are the main items
+# of 24 November 2026, kept here only so the page can be composed and
+# checked tonight.  They will be replaced with the verified news of
+# 25 November 2026 before the final submission.  The date line already
+# names the target day.
+# ----------------------------------------------------------------------
+PAPER_NAME = "ONE PAGE WORLD"
+DATE_WEEKDAY = "WEDNESDAY"
+DATE_LINE = "25 NOVEMBER 2026"
+SOURCE_LINE = "THE DAY'S WORLD NEWS ON ONE PAGE - AS REPORTED BY REUTERS, AP, AFP AND SCMP"
 
 LEAD = {
-    "tag": "EUROPE - WAR IN UKRAINE",
-    "color": (31, 58, 95),
+    "chip": "EUROPE - WAR IN UKRAINE",
     "headline": "RUSSIAN STRIKES KILL AT LEAST 14 NEAR KYIV",
-    "summary": (
-        "A FIVE-STOREY HOME COLLAPSED IN DYMER. RESCUERS KEPT "
-        "DIGGING AS THE TOLL ROSE."
-    ),
-    "scene": "kyiv",
+    "summary": "A FIVE-STOREY HOME COLLAPSED IN DYMER. RESCUERS KEPT "
+               "DIGGING THROUGH THE RUBBLE AS THE TOLL ROSE.",
+    "scene": "war",
 }
 
-STORIES = [
+PANELS = [
     {
-        "tag": "BUSINESS - TECH",
-        "color": (13, 110, 78),
+        "chip": "BUSINESS - TECH",
         "headline": "NVIDIA REINSTATES HUANG AS CEO",
-        "summary": (
-            "HUANG RETURNS UNDER TRUMP PRESSURE. SHARES LEAPT 31%."
-        ),
+        "summary": "BACK AT THE TOP JOB. SHARES LEAPT 31.5% IN A DAY.",
         "scene": "chip",
     },
     {
-        "tag": "CLIMATE",
-        "color": (13, 115, 119),
+        "chip": "CLIMATE",
         "headline": "COP31 TALKS COLLAPSE, NO DEAL",
-        "summary": (
-            "NO DEAL IN ANTALYA: THE EU REJECTED A FINAL TEXT THAT "
-            "DROPPED FOSSIL FUELS."
-        ),
+        "summary": "THE EU REJECTED A FINAL TEXT THAT DROPPED FOSSIL FUELS.",
         "scene": "globe",
     },
     {
-        "tag": "AMERICA",
-        "color": (91, 60, 130),
+        "chip": "AMERICA",
         "headline": "DEMOCRATS WIN 258 HOUSE SEATS",
-        "summary": (
-            "258 SEATS, THE BIGGEST MAJORITY SINCE 1992. CONTROL "
-            "BEGINS IN JANUARY."
-        ),
+        "summary": "THE BIGGEST MAJORITY SINCE 1992. THE SENATE FELL TOO.",
         "scene": "capitol",
     },
     {
-        "tag": "ASIA - INDONESIA",
-        "color": (178, 84, 22),
+        "chip": "ASIA - INDONESIA",
         "headline": "FACTORY FIRE KILLS AT LEAST 26",
-        "summary": (
-            "THE TOLL ROSE IN THE BANTEN CANDY FACTORY. EIGHT "
-            "STILL MISSING."
-        ),
+        "summary": "THE TOLL ROSE AT THE BANTEN CANDY FACTORY. 8 MISSING.",
         "scene": "factory",
     },
 ]
 
-TICKER = (
-    "ALSO TODAY: OREGON AND VIRGINIA SUE SPACEX OVER GROK AI IMAGES"
-)
+TICKER = "ALSO TODAY: OREGON AND VIRGINIA SUE SPACEX OVER SEXUALISED GROK AI IMAGES"
 
-# =====================================================================
-# THE FONT -- a vector stroke face, authored for this program.
-# Each glyph is (width, [stroke, ...]) in font units: x grows right,
-# y grows down, cap height is 10 units (y=0 is the cap line, y=10 the
-# baseline).  A stroke is a polyline; curves are ellipse arcs expanded
-# by arc().  Strokes are drawn with round caps and joins, so a lone
-# point renders as a round dot.
-# =====================================================================
-
-
-def arc(cx, cy, rx, ry, a0, a1, steps=12):
-    """Points along an ellipse, angles in degrees, y axis pointing
-    down (so increasing angles sweep clockwise on the page)."""
-    pts = []
-    for i in range(steps + 1):
-        a = math.radians(a0 + (a1 - a0) * i / steps)
-        pts.append((cx + rx * math.cos(a), cy + ry * math.sin(a)))
-    return pts
-
-
-GLYPHS = {
-    "A": (7.4, [[(0.3, 10), (3.7, 0), (7.1, 10)],
-                [(1.5, 6.4), (5.9, 6.4)]]),
-    "B": (7.2, [[(0, 0), (0, 10)],
-                [(0, 0), (3.6, 0)] + arc(3.6, 2.5, 2.3, 2.5, -90, 90, 8)
-                + [(0, 5)],
-                [(0, 5), (4.2, 5)] + arc(4.2, 7.5, 2.7, 2.5, -90, 90, 8)
-                + [(0, 10)]]),
-    "C": (7.6, [arc(3.9, 5, 3.6, 5, -52, -308, 18)]),
-    "D": (7.4, [[(0, 0), (0, 10)],
-                [(0, 0), (3.3, 0)] + arc(3.3, 5, 3.5, 5, -90, 90, 12)
-                + [(0, 10)]]),
-    "E": (6.4, [[(6.4, 0), (0, 0), (0, 10), (6.4, 10)],
-                [(0, 5), (5.2, 5)]]),
-    "F": (6.2, [[(6.2, 0), (0, 0), (0, 10)],
-                [(0, 5), (5.0, 5)]]),
-    "G": (7.8, [arc(3.9, 5, 3.6, 5, -52, -325, 18)
-                + [(6.85, 5.4), (4.3, 5.4)]]),
-    "H": (7.4, [[(0, 0), (0, 10)], [(7.4, 0), (7.4, 10)],
-                [(0, 5), (7.4, 5)]]),
-    "I": (3.4, [[(0, 0), (3.4, 0)], [(1.7, 0), (1.7, 10)],
-                [(0, 10), (3.4, 10)]]),
-    "J": (6.4, [[(6.2, 0), (6.2, 6.6)]
-                + arc(4.2, 6.6, 2.0, 3.4, 0, 90, 8) + [(0.9, 10)]]),
-    "K": (7.2, [[(0, 0), (0, 10)], [(6.9, 0), (0.7, 5.4)],
-                [(1.9, 4.3), (7.1, 10)]]),
-    "L": (6.2, [[(0, 0), (0, 10), (6.2, 10)]]),
-    "M": (8.8, [[(0, 10), (0, 0), (4.4, 6.4), (8.8, 0), (8.8, 10)]]),
-    "N": (7.6, [[(0, 10), (0, 0), (7.6, 10), (7.6, 0)]]),
-    "O": (7.8, [arc(3.9, 5, 3.6, 5, -90, 270, 24)]),
-    "P": (6.8, [[(0, 10), (0, 0), (3.7, 0)]
-                + arc(3.7, 2.6, 2.7, 2.6, -90, 90, 10) + [(0, 5.2)]]),
-    "Q": (7.8, [arc(3.9, 5, 3.6, 5, -90, 270, 24),
-                [(4.5, 7.3), (7.7, 10.3)]]),
-    "R": (6.8, [[(0, 10), (0, 0), (3.7, 0)]
-                + arc(3.7, 2.6, 2.7, 2.6, -90, 90, 10) + [(0, 5.2)],
-                [(3.3, 5.2), (7.0, 10)]]),
-    "S": (6.8, [[(6.2, 1.9), (5.0, 0.5), (3.3, 0), (1.6, 0.6),
-                 (0.7, 1.9), (0.9, 3.3), (2.1, 4.3), (4.5, 5.6),
-                 (5.8, 6.7), (6.1, 8.1), (5.1, 9.4), (3.3, 10),
-                 (1.6, 9.5), (0.6, 8.3)]]),
-    "T": (7.0, [[(0, 0), (7, 0)], [(3.5, 0), (3.5, 10)]]),
-    "U": (7.4, [[(0, 0), (0, 6.6)]
-                + arc(3.7, 6.6, 3.7, 3.4, 180, 0, 12) + [(7.4, 0)]]),
-    "V": (7.4, [[(0, 0), (3.7, 10), (7.4, 0)]]),
-    "W": (10.2, [[(0, 0), (1.9, 10), (5.1, 3.6), (8.3, 10),
-                  (10.2, 0)]]),
-    "X": (7.2, [[(0, 0), (7.2, 10)], [(7.2, 0), (0, 10)]]),
-    "Y": (7.2, [[(0, 0), (3.6, 4.8), (7.2, 0)],
-                [(3.6, 4.8), (3.6, 10)]]),
-    "Z": (6.8, [[(0, 0), (6.8, 0), (0, 10), (6.8, 10)]]),
-    "0": (7.2, [arc(3.6, 5, 3.2, 5, -90, 270, 24)]),
-    "1": (5.4, [[(0.9, 2.0), (3.0, 0.1), (3.0, 10)],
-                [(0.8, 10), (5.2, 10)]]),
-    "2": (6.8, [[(0.9, 1.8), (1.8, 0.5), (3.6, 0), (5.4, 0.7),
-                 (6.1, 2.2), (5.4, 4.0), (3.4, 5.9), (0.8, 9.6),
-                 (0.8, 10), (6.6, 10)]]),
-    "3": (6.8, [[(0.8, 1.3), (2.2, 0.2), (4.0, 0), (5.6, 0.9),
-                 (5.9, 2.4), (5.1, 3.9), (3.8, 4.6), (5.2, 5.4),
-                 (6.1, 6.9), (5.9, 8.6), (4.6, 9.8), (2.6, 10),
-                 (1.0, 9.3), (0.6, 8.1)]]),
-    "4": (7.2, [[(4.8, 10), (4.8, 0), (0.6, 7.2), (7.2, 7.2)]]),
-    "5": (6.6, [[(6.2, 0), (1.0, 0), (0.8, 4.0), (2.4, 3.5),
-                 (4.4, 3.7), (5.8, 4.9), (6.0, 6.7), (5.1, 8.8),
-                 (3.3, 10), (1.4, 9.6), (0.5, 8.3)]]),
-    "6": (6.8, [[(5.8, 1.3), (4.2, 0.3), (2.4, 0.9), (1.2, 2.8),
-                 (0.7, 5.2), (0.8, 7.4), (1.8, 9.3), (3.4, 10),
-                 (5.0, 9.4), (6.1, 7.8), (6.0, 6.0), (4.9, 4.7),
-                 (3.2, 4.5), (1.7, 5.2)]]),
-    "7": (6.6, [[(0.4, 0), (6.6, 0), (3.2, 10)]]),
-    "8": (6.8, [arc(3.4, 2.5, 2.3, 2.5, -90, 270, 18),
-                arc(3.4, 7.3, 2.9, 2.7, -90, 270, 20)]),
-    "9": (6.8, [arc(3.4, 3.1, 2.9, 3.1, -90, 270, 20),
-                [(6.3, 3.1), (6.1, 6.2), (4.9, 8.9), (3.0, 10),
-                 (1.2, 9.3)]]),
-    " ": (3.6, []),
-    ".": (2.6, [[(1.3, 9.1), (1.3, 9.1)]]),
-    ",": (2.6, [[(1.4, 8.3), (1.4, 8.3)], [(1.5, 8.6), (0.9, 10.7)]]),
-    "'": (2.4, [[(1.3, 0), (1.0, 2.3)]]),
-    ":": (2.6, [[(1.3, 3.0), (1.3, 3.0)], [(1.3, 8.9), (1.3, 8.9)]]),
-    ";": (2.6, [[(1.3, 3.0), (1.3, 3.0)], [(1.4, 8.3), (1.4, 8.3)],
-                [(1.5, 8.6), (0.9, 10.7)]]),
-    "!": (2.6, [[(1.3, 0), (1.3, 6.7)], [(1.3, 9.1), (1.3, 9.1)]]),
-    "?": (6.4, [[(1.0, 1.7), (1.9, 0.4), (3.5, 0), (5.0, 0.7),
-                 (5.5, 2.2), (4.7, 3.9), (3.4, 5.0), (3.4, 6.7)],
-                [(3.4, 9.1), (3.4, 9.1)]]),
-    "-": (4.8, [[(0.6, 5), (4.2, 5)]]),
-    "(": (4.0, [arc(2.8, 5, 2.6, 5.2, -70, -290, 14)]),
-    ")": (4.0, [arc(1.2, 5, 2.6, 5.2, -110, 110, 14)]),
-    "/": (5.6, [[(0.6, 10), (5.0, 0)]]),
-    "%": (7.4, [arc(1.9, 1.9, 1.6, 1.6, -90, 270, 12),
-                arc(5.5, 8.1, 1.6, 1.6, -90, 270, 12),
-                [(6.8, 0), (0.6, 10)]]),
-    "$": (6.8, [[(5.9, 1.7), (4.7, 0.4), (3.1, 0), (1.5, 0.6),
-                 (0.8, 1.8), (1.6, 3.1), (4.3, 4.6), (5.5, 5.9),
-                 (5.3, 7.9), (4.0, 9.6), (2.2, 10), (0.9, 8.9)],
-                [(3.3, -0.7), (3.3, 10.7)]]),
-    "&": (7.4, [[(5.9, 0.9), (4.6, 0.1), (3.0, 0.5), (2.2, 1.9),
-                 (2.6, 3.3), (3.8, 4.6), (6.3, 8.0), (7.0, 9.3)],
-                [(6.3, 8.0), (4.4, 9.7), (2.4, 10), (1.0, 8.9),
-                 (0.9, 7.0), (1.9, 5.4), (3.8, 4.6)]]),
-    "+": (6.0, [[(3.0, 2.2), (3.0, 7.8)], [(0.6, 5), (5.4, 5)]]),
-    "*": (6.0, [[(3.0, 1.4), (3.0, 6.2)], [(1.1, 2.4), (4.9, 5.2)],
-                [(4.9, 2.4), (1.1, 5.2)]]),
-}
-
-TRACK = 1.7        # font units of space after each glyph
-STROKE_FRAC = 0.13  # stroke width as a fraction of the cap height
-
-# =====================================================================
-# THE PRESS -- a small software printing press.
-# It draws into a frame buffer at SS times the final size, then
-# averages each SS x SS block down to one pixel (anti-aliasing).
-# All coordinates below are in final-image pixels; the press scales.
-# =====================================================================
-
-FINAL_W = 1024
-FINAL_H = 1024
-SS = 2
-W = FINAL_W * SS
-H = FINAL_H * SS
-
-PAPER = (247, 243, 234)
-INK = (26, 26, 40)
+# ----------------------------------------------------------------------
+# Page geometry and palette (all sizes in pixels, canvas 1024 x 1024)
+# ----------------------------------------------------------------------
+PAGE_W = 1024
+PAGE_H = 1024
+MARGIN = 36
+INK = (26, 26, 30)
+PAPER = (247, 243, 231)
+FAINT = (108, 102, 90)
+ACCENT = (178, 30, 43)
+NAVY = (24, 55, 96)
 WHITE = (255, 255, 255)
-RED = (178, 34, 52)
-GREY = (96, 96, 110)
-LIGHT_LINE = (203, 196, 180)
 
-buf = bytearray(W * H * 3)
-
-
-def _put(x, y, color):
-    i = (y * W + x) * 3
-    buf[i] = color[0]
-    buf[i + 1] = color[1]
-    buf[i + 2] = color[2]
-
-
-def fill_rect(x, y, w, h, color):
-    """Filled rectangle, in final-image coordinates."""
-    x0, y0 = int(x * SS), int(y * SS)
-    x1, y1 = int((x + w) * SS), int((y + h) * SS)
-    row = bytes(color) * max(0, x1 - x0)
-    for yy in range(max(0, y0), min(H, y1)):
-        start = (yy * W + max(0, x0)) * 3
-        buf[start:start + len(row)] = row
-
-
-def fill_circle(cx, cy, r, color):
-    """Filled circle by scanline spans, in final-image coordinates."""
-    cx, cy, r = cx * SS, cy * SS, r * SS
-    y0 = max(0, int(cy - r))
-    y1 = min(H - 1, int(cy + r))
-    for yy in range(y0, y1 + 1):
-        dy = yy - cy
-        span = int(max(0.0, r * r - dy * dy) ** 0.5)
-        x0 = max(0, int(cx - span))
-        x1 = min(W - 1, int(cx + span))
-        row = bytes(color) * (x1 - x0 + 1)
-        start = (yy * W + x0) * 3
-        buf[start:start + len(row)] = row
-
-
-def fill_poly(points, color):
-    """Filled polygon by scanline, points in final-image coordinates."""
-    pts = [(px * SS, py * SS) for px, py in points]
-    ys = [p[1] for p in pts]
-    y0 = max(0, int(min(ys)))
-    y1 = min(H - 1, int(max(ys)))
-    n = len(pts)
-    for yy in range(y0, y1 + 1):
-        scan = yy + 0.5
-        xs = []
-        for i in range(n):
-            ax, ay = pts[i]
-            bx, by = pts[(i + 1) % n]
-            if (ay <= scan < by) or (by <= scan < ay):
-                xs.append(ax + (scan - ay) * (bx - ax) / (by - ay))
-        xs.sort()
-        for i in range(0, len(xs) - 1, 2):
-            x0 = max(0, int(xs[i]))
-            x1 = min(W - 1, int(xs[i + 1]))
-            if x1 >= x0:
-                row = bytes(color) * (x1 - x0 + 1)
-                start = (yy * W + x0) * 3
-                buf[start:start + len(row)] = row
-
-
-def stroke_circle(cx, cy, r, color, width=2.0):
-    """Ring drawn as many small dots along the circumference."""
-    steps = max(24, int(2 * math.pi * r * SS / 2))
-    for i in range(steps):
-        a = 2 * math.pi * i / steps
-        fill_circle(cx + r * math.cos(a), cy + r * math.sin(a), width, color)
-
-
-# ---------------------------------------------------------------------
-# TEXT -- stroke glyphs are rasterised once per (character, size,
-# weight) into a coverage mask: for every buffer pixel near the
-# strokes, how much of it the ink covers, from the pixel centre's
-# distance to the nearest segment.  Drawing text then blends those
-# masks into the buffer, which keeps the letterforms smooth at any
-# size.
-# ---------------------------------------------------------------------
-
-_MASKS = {}
-
-
-def _unit(scale):
-    """Final-image pixels per font unit.  The cap height is 10 units
-    and equals 7 * scale pixels, matching the layout's line boxes."""
-    return 0.7 * scale
-
-
-def _seg_dist(px, py, ax, ay, bx, by):
-    dx, dy = bx - ax, by - ay
-    if dx == 0 and dy == 0:
-        return math.hypot(px - ax, py - ay)
-    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
-    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
-    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+# ----------------------------------------------------------------------
+# Glyph table.  Each entry: (advance width, [stroke, ...]) where a
+# stroke is a list of (x, y) points on a grid whose baseline is y=0 and
+# whose cap height is y=12.  A stroke of two identical points is a dot.
+# ----------------------------------------------------------------------
+GLYPHS = {
+    "A": (8.0, [[(0, 0), (4, 12), (8, 0)], [(1.8, 4.4), (6.2, 4.4)]]),
+    "B": (8.0, [[(1.2, 0), (1.2, 12)],
+                [(1.2, 12), (4.6, 12), (6.4, 10.6), (6.4, 8.6), (4.8, 7), (1.2, 7)],
+                [(1.2, 7), (5, 7), (6.8, 5.2), (6.8, 2), (5, 0), (1.2, 0)]]),
+    "C": (8.0, [[(7.6, 9.6), (5.4, 11.6), (3, 12), (1, 10.4), (0.4, 6),
+                 (1, 1.8), (3, 0.2), (5.4, 0.4), (7.6, 2.4)]]),
+    "D": (8.0, [[(1.2, 0), (1.2, 12)],
+                [(1.2, 12), (4.4, 12), (6.8, 9.6), (6.8, 2.4), (4.4, 0), (1.2, 0)]]),
+    "E": (7.5, [[(7, 12), (1.2, 12), (1.2, 0), (7, 0)], [(1.2, 6.2), (5.6, 6.2)]]),
+    "F": (7.0, [[(1.2, 0), (1.2, 12), (7, 12)], [(1.2, 6.2), (5.4, 6.2)]]),
+    "G": (8.5, [[(8, 9.8), (5.8, 11.8), (3.2, 12), (1, 10.2), (0.4, 6),
+                 (1, 1.8), (3.2, 0.2), (5.8, 0.4), (8, 2.2), (8, 5.6), (5.2, 5.6)]]),
+    "H": (8.0, [[(1.2, 0), (1.2, 12)], [(6.8, 0), (6.8, 12)], [(1.2, 6.2), (6.8, 6.2)]]),
+    "I": (3.0, [[(1.5, 0), (1.5, 12)]]),
+    "J": (6.0, [[(5, 12), (5, 2.6), (3.8, 0.6), (1.8, 0.2), (0.4, 1.6)]]),
+    "K": (8.0, [[(1.2, 0), (1.2, 12)], [(6.8, 12), (1.6, 5.6)], [(2.4, 6.6), (7, 0)]]),
+    "L": (7.0, [[(1.2, 12), (1.2, 0), (6.8, 0)]]),
+    "M": (10.5, [[(0.8, 0), (0.8, 12), (5.2, 4.6), (9.6, 12), (9.6, 0)]]),
+    "N": (8.5, [[(1.2, 0), (1.2, 12), (7.2, 0), (7.2, 12)]]),
+    "O": (8.5, [[(4.2, 12), (1.2, 10.2), (0.4, 6), (1.2, 1.8), (4.2, 0),
+                 (7.2, 1.8), (8, 6), (7.2, 10.2), (4.2, 12)]]),
+    "P": (8.0, [[(1.2, 0), (1.2, 12)],
+                [(1.2, 12), (4.8, 12), (6.8, 10.4), (6.8, 7.6), (4.8, 6), (1.2, 6)]]),
+    "Q": (8.5, [[(4.2, 12), (1.2, 10.2), (0.4, 6), (1.2, 1.8), (4.2, 0),
+                 (7.2, 1.8), (8, 6), (7.2, 10.2), (4.2, 12)],
+                [(5.4, 3.4), (8.2, -0.6)]]),
+    "R": (8.0, [[(1.2, 0), (1.2, 12)],
+                [(1.2, 12), (4.8, 12), (6.8, 10.4), (6.8, 7.6), (4.8, 6), (1.2, 6)],
+                [(4.6, 6), (7.2, 0)]]),
+    "S": (7.5, [[(7, 10), (4.8, 12), (2.2, 11.6), (0.8, 9.4), (1.6, 7),
+                 (6, 5), (7.2, 2.8), (5.6, 0.4), (2.8, 0), (0.6, 1.8)]]),
+    "T": (8.0, [[(0.4, 12), (7.6, 12)], [(4, 12), (4, 0)]]),
+    "U": (8.5, [[(1, 12), (1, 3.4), (2.2, 0.8), (4.2, 0), (6.2, 0.8),
+                 (7.4, 3.4), (7.4, 12)]]),
+    "V": (8.5, [[(0.4, 12), (4.2, 0), (8, 12)]]),
+    "W": (11.5, [[(0.4, 12), (2.4, 0), (5.6, 8.6), (8.8, 0), (11, 12)]]),
+    "X": (8.0, [[(0.6, 12), (7.4, 0)], [(0.6, 0), (7.4, 12)]]),
+    "Y": (8.0, [[(0.4, 12), (4, 6.4), (7.6, 12)], [(4, 6.4), (4, 0)]]),
+    "Z": (7.5, [[(0.6, 12), (7, 12), (0.6, 0), (7, 0)]]),
+    "0": (8.0, [[(4, 12), (1.6, 10.4), (0.8, 6), (1.6, 1.6), (4, 0),
+                 (6.4, 1.6), (7.2, 6), (6.4, 10.4), (4, 12)]]),
+    "1": (5.5, [[(1.2, 9.4), (3.6, 12), (3.6, 0)], [(1.4, 0), (5.2, 0)]]),
+    "2": (7.5, [[(0.8, 9.6), (2.4, 11.8), (5, 12), (6.8, 10), (6.4, 7.4),
+                 (0.8, 0), (7, 0)]]),
+    "3": (7.5, [[(0.8, 10.2), (3, 12), (5.4, 11.4), (6, 8.8), (4.6, 6.8), (3, 6.6)],
+                [(3, 6.6), (5, 6.4), (6.6, 4.6), (6.2, 1.8), (4, 0), (1, 0.6)]]),
+    "4": (8.0, [[(5.4, 0), (5.4, 12), (0.6, 4.2), (7.4, 4.2)]]),
+    "5": (7.5, [[(6.8, 12), (1.4, 12), (1.2, 7), (4.4, 7.4), (6.6, 5.4),
+                 (6.4, 2), (4.2, 0), (1.2, 0.6)]]),
+    "6": (7.5, [[(6.6, 10.4), (4.4, 12), (1.8, 9.6), (0.8, 6), (1, 2.4),
+                 (3, 0.2), (5.2, 0.4), (6.6, 2.4), (6.4, 5), (4.6, 6.6), (1.2, 5.2)]]),
+    "7": (7.5, [[(0.6, 12), (7, 12), (3.4, 0)]]),
+    "8": (7.5, [[(3.8, 6.4), (1.6, 8), (1.8, 10.6), (3.8, 12), (5.6, 10.6),
+                 (5.8, 8), (3.8, 6.4), (1.4, 4.4), (1.6, 1.6), (3.8, 0),
+                 (5.8, 1.6), (6, 4.4), (3.8, 6.4)]]),
+    "9": (7.5, [[(0.8, 1.6), (3, 0), (5.4, 2.4), (6.4, 6), (6.2, 9.8),
+                 (4.2, 11.8), (2, 11.6), (0.8, 10), (1, 7.2), (2.8, 5.6), (6.2, 6.8)]]),
+    ".": (2.5, [[(1.2, 0.8), (1.2, 0.8)]]),
+    ",": (2.5, [[(1.4, 1.2), (0.8, -1.2)]]),
+    ":": (2.5, [[(1.2, 8.6), (1.2, 8.6)], [(1.2, 0.8), (1.2, 0.8)]]),
+    ";": (2.5, [[(1.2, 8.6), (1.2, 8.6)], [(1.4, 1.2), (0.8, -1.2)]]),
+    "!": (2.5, [[(1.2, 12), (1.2, 3.4)], [(1.2, 0.8), (1.2, 0.8)]]),
+    "?": (7.0, [[(0.8, 9.8), (2.4, 11.8), (4.8, 11.8), (6.2, 9.8), (5.8, 7.4),
+                 (3.8, 5.8), (3.8, 3.6)], [(3.8, 0.8), (3.8, 0.8)]]),
+    "-": (5.0, [[(0.6, 6), (4.4, 6)]]),
+    "%": (9.0, [[(2, 12), (7, 0)],
+                [(2.2, 10.6), (1, 9.8), (1.2, 8.2), (2.6, 7.6), (3.8, 8.4),
+                 (3.6, 10), (2.2, 10.6)],
+                [(6.8, 4.4), (5.6, 3.6), (5.8, 2), (7.2, 1.4), (8.4, 2.2),
+                 (8.2, 3.8), (6.8, 4.4)]]),
+    "/": (5.0, [[(4.4, 12.6), (0.6, -0.6)]]),
+    "(": (4.5, [[(4, 12), (1.8, 9), (1.2, 6), (1.8, 3), (4, 0)]]),
+    ")": (4.5, [[(0.6, 12), (2.8, 9), (3.4, 6), (2.8, 3), (0.6, 0)]]),
+    "+": (7.0, [[(0.8, 6), (6.2, 6)], [(3.5, 9.5), (3.5, 2.5)]]),
+    "'": (2.5, [[(1.2, 12), (1.2, 9.6)]]),
+    '"': (4.0, [[(1, 12), (1, 9.6)], [(3.2, 12), (3.2, 9.6)]]),
+    "$": (7.5, [[(3.8, 13.2), (3.8, -1.2)],
+                [(6.8, 10), (4.8, 11.8), (2.2, 11.4), (0.9, 9.3), (1.7, 7),
+                 (5.9, 5), (7.1, 2.8), (5.5, 0.4), (2.8, 0), (0.7, 1.8)]]),
+}
+SPACE_ADVANCE = 4.5
 
 
-def _glyph_mask(ch, scale, weight):
-    """Coverage mask for one glyph: a tuple of (dx, dy, coverage) in
-    buffer pixels, relative to the glyph's origin (pen position at
-    the cap line)."""
-    key = (ch, scale, weight)
-    hit = _MASKS.get(key)
-    if hit is not None:
-        return hit
-    _, strokes = GLYPHS.get(ch, GLYPHS[" "])
-    u = _unit(scale) * SS
-    half = max(0.6, 0.5 * STROKE_FRAC * 7 * scale * SS * weight)
-    segs = []
-    for stroke in strokes:
-        pts = [(px * u, py * u) for px, py in stroke]
-        if len(pts) == 1:
-            segs.append((pts[0], pts[0]))
-        for a, b in zip(pts, pts[1:]):
-            segs.append((a, b))
-    if not segs:
-        _MASKS[key] = ()
-        return ()
-    xs = [p[0] for s in segs for p in s]
-    ys = [p[1] for s in segs for p in s]
-    x0 = int(math.floor(min(xs) - half - 1))
-    x1 = int(math.ceil(max(xs) + half + 1))
-    y0 = int(math.floor(min(ys) - half - 1))
-    y1 = int(math.ceil(max(ys) + half + 1))
-    items = []
-    for yy in range(y0, y1 + 1):
-        for xx in range(x0, x1 + 1):
-            cx, cy = xx + 0.5, yy + 0.5
-            d = min(_seg_dist(cx, cy, a[0], a[1], b[0], b[1])
-                    for a, b in segs)
-            cov = half + 0.5 - d
-            if cov > 0:
-                items.append((xx, yy, 1.0 if cov >= 1.0 else cov))
-    mask = tuple(items)
-    _MASKS[key] = mask
-    return mask
+# ----------------------------------------------------------------------
+# Canvas: an RGB bytearray painted with coverage blending.
+# ----------------------------------------------------------------------
+class Canvas:
+    def __init__(self, w, h, bg):
+        self.w = w
+        self.h = h
+        self.px = bytearray(bg * (w * h))
+
+    def blend(self, x, y, color, alpha):
+        if alpha <= 0.0 or x < 0 or y < 0 or x >= self.w or y >= self.h:
+            return
+        i = (y * self.w + x) * 3
+        keep = 1.0 - alpha
+        self.px[i] = int(self.px[i] * keep + color[0] * alpha + 0.5)
+        self.px[i + 1] = int(self.px[i + 1] * keep + color[1] * alpha + 0.5)
+        self.px[i + 2] = int(self.px[i + 2] * keep + color[2] * alpha + 0.5)
+
+    def rect(self, x0, y0, x1, y1, color):
+        """Filled rectangle with anti-aliased edges (float coords)."""
+        xa = max(0, int(math.floor(x0)))
+        xb = min(self.w - 1, int(math.ceil(x1)) - 1)
+        ya = max(0, int(math.floor(y0)))
+        yb = min(self.h - 1, int(math.ceil(y1)) - 1)
+        for y in range(ya, yb + 1):
+            covy = min(y1, y + 1.0) - max(y0, float(y))
+            if covy <= 0.0:
+                continue
+            for x in range(xa, xb + 1):
+                covx = min(x1, x + 1.0) - max(x0, float(x))
+                if covx > 0.0:
+                    self.blend(x, y, color, covx * covy)
+
+    def disc(self, cx, cy, rad, color):
+        xa = max(0, int(cx - rad - 1))
+        xb = min(self.w - 1, int(cx + rad + 1))
+        ya = max(0, int(cy - rad - 1))
+        yb = min(self.h - 1, int(cy + rad + 1))
+        for y in range(ya, yb + 1):
+            for x in range(xa, xb + 1):
+                d = math.hypot(x + 0.5 - cx, y + 0.5 - cy)
+                self.blend(x, y, color, min(1.0, max(0.0, rad + 0.75 - d)))
+
+    def segment(self, ax, ay, bx, by, half, color):
+        """Thick round-capped stroke from (ax, ay) to (bx, by)."""
+        pad = half + 1.0
+        xa = max(0, int(min(ax, bx) - pad))
+        xb = min(self.w - 1, int(max(ax, bx) + pad))
+        ya = max(0, int(min(ay, by) - pad))
+        yb = min(self.h - 1, int(max(ay, by) + pad))
+        dx = bx - ax
+        dy = by - ay
+        len2 = dx * dx + dy * dy
+        for y in range(ya, yb + 1):
+            py = y + 0.5
+            for x in range(xa, xb + 1):
+                px = x + 0.5
+                if len2 == 0.0:
+                    d = math.hypot(px - ax, py - ay)
+                else:
+                    t = ((px - ax) * dx + (py - ay) * dy) / len2
+                    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+                    d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+                self.blend(x, y, color, min(1.0, max(0.0, half + 0.75 - d)))
+
+    def poly(self, pts, color):
+        """Filled polygon, 2x2 supersampled coverage."""
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        xa = max(0, int(min(xs)))
+        xb = min(self.w - 1, int(max(xs)))
+        ya = max(0, int(min(ys)))
+        yb = min(self.h - 1, int(max(ys)))
+        n = len(pts)
+        for y in range(ya, yb + 1):
+            for x in range(xa, xb + 1):
+                inside = 0
+                for oy in (0.25, 0.75):
+                    for ox in (0.25, 0.75):
+                        sx = x + ox
+                        sy = y + oy
+                        hit = False
+                        j = n - 1
+                        for i in range(n):
+                            xi, yi = pts[i]
+                            xj, yj = pts[j]
+                            if (yi > sy) != (yj > sy):
+                                xint = (xj - xi) * (sy - yi) / (yj - yi) + xi
+                                if sx < xint:
+                                    hit = not hit
+                            j = i
+                        if hit:
+                            inside += 1
+                if inside:
+                    self.blend(x, y, color, inside / 4.0)
 
 
-def _blit(ox, oy, mask, color):
-    """Blend a coverage mask into the buffer at final-image (ox, oy)."""
-    bx = int(round(ox * SS))
-    by = int(round(oy * SS))
-    r, g, b = color
-    for dx, dy, cov in mask:
-        xx, yy = bx + dx, by + dy
-        if 0 <= xx < W and 0 <= yy < H:
-            i = (yy * W + xx) * 3
-            inv = 1.0 - cov
-            buf[i] = int(r * cov + buf[i] * inv + 0.5)
-            buf[i + 1] = int(g * cov + buf[i + 1] * inv + 0.5)
-            buf[i + 2] = int(b * cov + buf[i + 2] * inv + 0.5)
+# ----------------------------------------------------------------------
+# Text painting.  `size` is the cap height in pixels; `weight` is the
+# stroke width in grid units.  Baseline y grows downward on the page,
+# so glyph y is flipped when mapped to the canvas.
+# ----------------------------------------------------------------------
+def glyph_advance(ch, size):
+    scale = size / 12.0
+    if ch == " ":
+        return SPACE_ADVANCE * scale
+    return GLYPHS[ch][0] * scale
 
 
-def text_width(text, scale):
-    text = text.upper()
-    if not text:
-        return 0.0
-    units = sum(GLYPHS.get(ch, GLYPHS[" "])[0] for ch in text)
-    units += TRACK * (len(text) - 1)
-    return units * _unit(scale)
+def auto_tracking(size, weight):
+    """Breathing room per letter, proportional to stroke weight: the
+    glyph paths nearly fill their advance, so heavier strokes need
+    extra space or neighbouring letters collide."""
+    return weight * (size / 12.0) * 0.8
 
 
-def draw_text(x, y, text, scale, color, align="left", weight=1.0):
-    """Draw one line of capitals; (x, y) is the top-left of the line
-    (the cap line), or its centre when align='center'.  Returns the
-    line's width.  weight multiplies the stroke width."""
-    text = text.upper()
-    w = text_width(text, scale)
-    if align == "center":
-        x = x - w / 2
-    pen = x
-    u = _unit(scale)
+def text_width(text, size, weight=2.0, tracking=None):
+    if tracking is None:
+        tracking = auto_tracking(size, weight)
+    total = 0.0
     for ch in text:
-        gw = GLYPHS.get(ch, GLYPHS[" "])[0]
-        if ch != " ":
-            _blit(pen, y, _glyph_mask(ch, scale, weight), color)
-        pen += (gw + TRACK) * u
-    return w
+        total += glyph_advance(ch, size) + tracking
+    return total - (tracking if text else 0.0)
 
 
-def wrap(text, scale, max_width):
-    """Greedy word wrap: a list of lines that fit max_width pixels."""
+def draw_text(cv, x, y_base, text, size, weight, color, tracking=None):
+    if tracking is None:
+        tracking = auto_tracking(size, weight)
+    scale = size / 12.0
+    half = weight * scale / 2.0
+    pen = x
+    for ch in text:
+        if ch == " ":
+            pen += SPACE_ADVANCE * scale + tracking
+            continue
+        adv, strokes = GLYPHS[ch]
+        for stroke in strokes:
+            pts = [(pen + gx * scale, y_base - gy * scale) for gx, gy in stroke]
+            for i in range(len(pts) - 1):
+                cv.segment(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1],
+                           half, color)
+            if len(pts) == 1:
+                cv.segment(pts[0][0], pts[0][1], pts[0][0], pts[0][1], half, color)
+        pen += adv * scale + tracking
+    return pen - tracking
+
+
+def draw_text_centered(cv, cx, y_base, text, size, weight, color, tracking=None):
+    w = text_width(text, size, weight, tracking)
+    return draw_text(cv, cx - w / 2.0, y_base, text, size, weight, color, tracking)
+
+
+def draw_text_right(cv, xr, y_base, text, size, weight, color, tracking=None):
+    w = text_width(text, size, weight, tracking)
+    return draw_text(cv, xr - w, y_base, text, size, weight, color, tracking)
+
+
+def wrap(text, size, max_w, weight=2.0):
+    words = text.split()
     lines = []
-    line = ""
-    for word in text.split():
-        trial = word if not line else line + " " + word
-        if text_width(trial, scale) <= max_width:
-            line = trial
+    cur = ""
+    for word in words:
+        trial = word if not cur else cur + " " + word
+        if text_width(trial, size, weight) <= max_w or not cur:
+            cur = trial
         else:
-            if line:
-                lines.append(line)
-            line = word
-    if line:
-        lines.append(line)
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
     return lines
 
 
-def draw_text_block(x, y, text, scale, color, max_width, leading=None,
-                    weight=1.0):
-    """Wrapped paragraph; returns the y just below the last line."""
-    if leading is None:
-        leading = int(7 * scale * 1.45)
-    for line in wrap(text, scale, max_width):
-        draw_text(x, y, line, scale, color, weight=weight)
-        y += leading
-    return y
-
-
-# =====================================================================
-# SCENES -- small drawn pictures, one per story.  Each paints inside
-# the box (x, y, w, h) it is given, in final-image coordinates.
-# =====================================================================
-
-def scene_kyiv(x, y, w, h):
-    # Night sky, two bands of deep blue.
-    fill_rect(x, y, w, h * 0.62, (24, 30, 64))
-    fill_rect(x, y + h * 0.62, w, h * 0.38, (40, 44, 84))
-    # Moon and a few stars (fixed positions: no randomness).
-    fill_circle(x + w * 0.82, y + h * 0.18, 13, (238, 232, 200))
-    for sx, sy in ((0.08, 0.12), (0.22, 0.3), (0.4, 0.1), (0.55, 0.24),
-                   (0.66, 0.08), (0.3, 0.44), (0.12, 0.5)):
-        fill_circle(x + w * sx, y + h * sy, 1.6, (210, 214, 235))
-    # Burst of light over the skyline.
-    cx, cy = x + w * 0.46, y + h * 0.52
+# ----------------------------------------------------------------------
+# Scene: the lead panorama (panel scenes arrive in the next round)
+# ----------------------------------------------------------------------
+def scene_war(cv, x, y, w, h):
+    sky_top = (16, 22, 48)
+    sky_bot = (44, 54, 92)
+    bands = 12
+    for i in range(bands):
+        t = i / bands
+        col = tuple(int(sky_top[c] + (sky_bot[c] - sky_top[c]) * t) for c in range(3))
+        cv.rect(x, y + h * i / bands, x + w, y + h * (i + 1) / bands + 1, col)
+    cv.disc(x + w * 0.80, y + h * 0.30, h * 0.13, (238, 232, 200))
+    for sx, sy in ((0.08, 0.22), (0.22, 0.12), (0.55, 0.16), (0.66, 0.30), (0.38, 0.28)):
+        cv.disc(x + w * sx, y + h * sy, 1.6, (230, 230, 220))
+    ground = y + h
+    blocks = [(0.00, 0.52, 0.13), (0.14, 0.36, 0.11), (0.26, 0.60, 0.14),
+              (0.41, 0.44, 0.10), (0.52, 0.66, 0.13), (0.66, 0.40, 0.11),
+              (0.78, 0.56, 0.12), (0.91, 0.46, 0.09)]
+    sil = (10, 12, 22)
+    win = (250, 205, 110)
+    for fx, fh, fw in blocks:
+        bx = x + w * fx
+        bw = w * fw
+        by = ground - h * fh
+        cv.rect(bx, by, bx + bw, ground, sil)
+        rows = int(fh * h / 16)
+        cols = max(1, int(bw / 15))
+        for r in range(rows):
+            for c in range(cols):
+                if (r * 7 + c * 13 + int(fx * 100)) % 5 in (0, 2):
+                    cv.rect(bx + 4 + c * 15, by + 6 + r * 16,
+                            bx + 9 + c * 15, by + 11 + r * 16, win)
+    ex = x + w * 0.335
+    ey = ground - h * 0.62
     star = []
     for i in range(16):
-        ang = math.pi * i / 8
-        rad = 30 if i % 2 == 0 else 12
-        star.append((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
-    fill_poly(star, (245, 166, 35))
-    fill_circle(cx, cy, 8, (255, 226, 130))
-    # Smoke: overlapping grey circles rising from the burst.
-    for dx, dy, r in ((-16, -26, 12), (2, -40, 15), (22, -52, 11),
-                      (40, -62, 8)):
-        fill_circle(cx + dx, cy + dy, r, (120, 122, 140))
-    # Skyline of apartment blocks along the bottom.
-    ground = y + h
-    blocks = ((0.0, 0.30), (0.13, 0.44), (0.27, 0.24), (0.38, 0.52),
-              (0.52, 0.34), (0.63, 0.46), (0.76, 0.27), (0.87, 0.38))
-    for bx, bh in blocks:
-        bw = w * 0.115
-        fill_rect(x + w * bx, ground - h * bh, bw, h * bh, (10, 11, 22))
-        # A few lit windows, on a fixed grid.
-        for wy in range(int(h * bh) - 14, 8, -16):
-            for wx in (6, 20):
-                if (wx + wy) % 3 == 0:
-                    fill_rect(x + w * bx + wx, ground - wy - 6, 5, 7,
-                              (250, 205, 110))
-    fill_rect(x, ground - 3, w, 3, (6, 6, 14))
+        ang = i * math.pi / 8
+        rad = h * (0.19 if i % 2 == 0 else 0.08)
+        star.append((ex + rad * math.cos(ang), ey + rad * math.sin(ang)))
+    cv.poly(star, (255, 176, 48))
+    cv.disc(ex, ey, h * 0.055, (255, 226, 150))
+    for gx, gy, gr in ((0.375, 0.26, 0.045), (0.415, 0.185, 0.06), (0.465, 0.12, 0.08)):
+        cv.disc(x + w * gx, y + h * gy, h * gr, (146, 148, 158))
 
 
-def scene_chip(x, y, w, h):
-    cx, cy = x + w / 2, y + h / 2
-    green = (13, 110, 78)
-    # Pins on all four sides of the package.
+# ----------------------------------------------------------------------
+# Panel icons: one small emblem per story, drawn in a square box.
+# ----------------------------------------------------------------------
+def icon_chip(cv, x, y, s):
+    green = (10, 105, 70)
+    gold = (216, 178, 60)
+    cv.rect(x + s * 0.16, y + s * 0.16, x + s * 0.84, y + s * 0.84, green)
     for i in range(4):
-        px = cx - 24 + i * 16
-        fill_rect(px, cy - 36, 6, 10, green)
-        fill_rect(px, cy + 26, 6, 10, green)
-        py = cy - 24 + i * 16
-        fill_rect(cx - 36, py, 10, 6, green)
-        fill_rect(cx + 26, py, 10, 6, green)
-    # Body and core.
-    fill_rect(cx - 28, cy - 28, 56, 56, green)
-    fill_rect(cx - 15, cy - 15, 30, 30, (9, 74, 52))
-    draw_text(cx, cy - 7, "AI", 2, WHITE, align="center", weight=1.2)
+        t = s * (0.26 + i * 0.16)
+        cv.rect(x + t, y + s * 0.04, x + t + s * 0.07, y + s * 0.16, gold)
+        cv.rect(x + t, y + s * 0.84, x + t + s * 0.07, y + s * 0.96, gold)
+        cv.rect(x + s * 0.04, y + t, x + s * 0.16, y + t + s * 0.07, gold)
+        cv.rect(x + s * 0.84, y + t, x + s * 0.96, y + t + s * 0.07, gold)
+    cv.rect(x + s * 0.33, y + s * 0.33, x + s * 0.67, y + s * 0.67, (16, 140, 96))
+    cv.segment(x + s * 0.38, y + s * 0.62, x + s * 0.52, y + s * 0.47,
+               s * 0.035, WHITE)
+    cv.segment(x + s * 0.52, y + s * 0.47, x + s * 0.63, y + s * 0.58,
+               s * 0.035, WHITE)
+    cv.segment(x + s * 0.52, y + s * 0.38, x + s * 0.64, y + s * 0.37,
+               s * 0.035, WHITE)
+    cv.segment(x + s * 0.64, y + s * 0.37, x + s * 0.63, y + s * 0.49,
+               s * 0.035, WHITE)
 
 
-def scene_globe(x, y, w, h):
-    cx, cy = x + w / 2, y + h / 2 + 4
-    teal = (13, 115, 119)
-    fill_circle(cx, cy, 24, (64, 156, 190))
-    # Land masses: rough blobs on the disc.
-    for dx, dy, r in ((-9, -7, 8), (6, -12, 6), (11, 5, 8),
-                      (-4, 11, 7), (-15, 6, 5)):
-        fill_circle(cx + dx, cy + dy, r, (52, 150, 96))
-    stroke_circle(cx, cy, 24, teal, 1.4)
-    # Heat waves rising off the top.
-    for dx in (-14, 0, 14):
-        fill_poly([(cx + dx - 3, cy - 28), (cx + dx + 3, cy - 28),
-                   (cx + dx + 5, cy - 36), (cx + dx + 1, cy - 41),
-                   (cx + dx - 4, cy - 36)], (214, 90, 40))
+def icon_globe(cv, x, y, s):
+    cx = x + s * 0.5
+    cy = y + s * 0.54
+    r = s * 0.38
+    cv.disc(cx, cy, r, (38, 110, 168))
+    land = (52, 160, 92)
+    cv.disc(cx - r * 0.34, cy - r * 0.30, r * 0.30, land)
+    cv.disc(cx + r * 0.30, cy - r * 0.44, r * 0.22, land)
+    cv.disc(cx + r * 0.10, cy + r * 0.36, r * 0.28, land)
+    cv.disc(cx - r * 0.44, cy + r * 0.30, r * 0.18, land)
+    ink = (20, 24, 30)
+    pts = [(cx - r * 0.1, cy - r), (cx + r * 0.08, cy - r * 0.55),
+           (cx - r * 0.14, cy - r * 0.1), (cx + r * 0.12, cy + r * 0.4),
+           (cx - r * 0.02, cy + r * 0.95)]
+    for i in range(len(pts) - 1):
+        cv.segment(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1],
+                   s * 0.022, ink)
+    flame = (232, 110, 30)
+    for fx in (0.36, 0.5, 0.64):
+        bx = x + s * fx
+        cv.poly([(bx - s * 0.045, y + s * 0.14), (bx, y + s * 0.015),
+                 (bx + s * 0.045, y + s * 0.14), (bx, y + s * 0.10)], flame)
 
 
-def scene_capitol(x, y, w, h):
-    cx = x + w / 2
-    base = y + h - 4
-    purple = (91, 60, 130)
-    # Dome: a spire over stacked arcs.
-    fill_rect(cx - 2, base - 58, 4, 8, purple)
-    fill_circle(cx, base - 48, 4, purple)
-    for i, half in enumerate((10, 16, 21)):
-        fill_rect(cx - half, base - 46 + i * 5, half * 2, 5, purple)
-    # Entablature, columns and steps.
-    fill_rect(cx - 30, base - 30, 60, 5, purple)
+def icon_capitol(cv, x, y, s):
+    purple = (96, 62, 158)
+    cx = x + s * 0.5
+    base = y + s * 0.92
+    cv.rect(x + s * 0.10, base - s * 0.07, x + s * 0.90, base, purple)
+    cv.rect(x + s * 0.16, base - s * 0.14, x + s * 0.84, base - s * 0.07, purple)
     for i in range(5):
-        fill_rect(cx - 26 + i * 11, base - 25, 5, 20, purple)
-    fill_rect(cx - 33, base - 5, 66, 3, purple)
-    fill_rect(cx - 36, base - 2, 72, 2, purple)
+        lx = x + s * (0.24 + i * 0.13)
+        cv.rect(lx, base - s * 0.44, lx + s * 0.055, base - s * 0.14, purple)
+    cv.rect(x + s * 0.16, base - s * 0.52, x + s * 0.84, base - s * 0.44, purple)
+    dome = []
+    for i in range(13):
+        ang = math.pi * i / 12
+        dome.append((cx + s * 0.26 * math.cos(ang), base - s * 0.52 - s * 0.24 * math.sin(ang)))
+    cv.poly(dome + [(cx + s * 0.26, base - s * 0.52), (cx - s * 0.26, base - s * 0.52)], purple)
+    cv.segment(cx, base - s * 0.76, cx, base - s * 0.90, s * 0.018, purple)
+    cv.poly([(cx, base - s * 0.90), (cx + s * 0.13, base - s * 0.855),
+             (cx, base - s * 0.81)], ACCENT)
 
 
-def scene_factory(x, y, w, h):
-    cx = x + w / 2
-    base = y + h - 4
-    dark = (52, 40, 34)
-    # Chimney and a saw-tooth roof block.
-    fill_rect(cx - 30, base - 40, 9, 24, dark)
-    roof = [(cx - 38, base - 20), (cx - 20, base - 30), (cx - 2, base - 20),
-            (cx + 16, base - 30), (cx + 34, base - 20), (cx + 38, base - 20),
-            (cx + 38, base), (cx - 38, base)]
-    fill_poly(roof, dark)
-    # Flames above the roof: three teardrops.
-    for dx, s in ((-16, 0.8), (2, 1.05), (20, 0.7)):
-        fx, fy = cx + dx, base - 28
-        fill_poly([(fx - 7 * s, fy), (fx, fy - 22 * s), (fx + 7 * s, fy)],
-                  (224, 110, 30))
-        fill_poly([(fx - 3.5 * s, fy), (fx, fy - 12 * s),
-                   (fx + 3.5 * s, fy)], (248, 190, 60))
-    # Smoke from the chimney.
-    for dx, dy, r in ((-26, -46, 5), (-20, -52, 7), (-12, -57, 6)):
-        fill_circle(cx + dx, base + dy, r, (150, 144, 136))
+def icon_factory(cv, x, y, s):
+    dark = (38, 36, 40)
+    base = y + s * 0.92
+    cv.rect(x + s * 0.08, base - s * 0.34, x + s * 0.92, base, dark)
+    cv.rect(x + s * 0.62, base - s * 0.62, x + s * 0.74, base - s * 0.34, dark)
+    cv.rect(x + s * 0.14, base - s * 0.48, x + s * 0.30, base - s * 0.34, dark)
+    flame_o = (238, 116, 26)
+    flame_y = (250, 190, 60)
+    for fx, fh in ((0.22, 0.30), (0.40, 0.38), (0.68, 0.34)):
+        bx = x + s * fx
+        by = base - s * 0.34
+        cv.poly([(bx - s * 0.085, by), (bx - s * 0.02, by - s * fh * 0.6),
+                 (bx + s * 0.02, by - s * fh), (bx + s * 0.05, by - s * fh * 0.55),
+                 (bx + s * 0.085, by)], flame_o)
+        cv.poly([(bx - s * 0.04, by), (bx, by - s * fh * 0.5),
+                 (bx + s * 0.04, by)], flame_y)
+    cv.disc(x + s * 0.68, y + s * 0.16, s * 0.075, (130, 128, 132))
+    cv.disc(x + s * 0.76, y + s * 0.10, s * 0.10, (150, 148, 152))
 
 
-SCENES = {
-    "kyiv": scene_kyiv,
-    "chip": scene_chip,
-    "globe": scene_globe,
-    "capitol": scene_capitol,
-    "factory": scene_factory,
-}
+ICONS = {"chip": icon_chip, "globe": icon_globe,
+         "capitol": icon_capitol, "factory": icon_factory}
+
+PANEL_TINTS = [(10, 105, 70), (178, 30, 43), (96, 62, 158), (198, 106, 24)]
 
 
-# =====================================================================
-# LAYOUT -- masthead, one lead story, four panels, one ticker line.
-# =====================================================================
+# ----------------------------------------------------------------------
+# Page assembly
+# ----------------------------------------------------------------------
+def build_page():
+    cv = Canvas(PAGE_W, PAGE_H, PAPER)
+    right = PAGE_W - MARGIN
+    inner_w = right - MARGIN
 
-MARGIN = 32
-PAGE_W = FINAL_W - 2 * MARGIN
+    # Masthead: paper name left (shrunk to clear the date box), date right.
+    box_w = 252
+    name_size = 52.0
+    while text_width(PAPER_NAME, name_size, 2.15) > inner_w - box_w - 18 and name_size > 30:
+        name_size -= 1.0
+    draw_text(cv, MARGIN, 76, PAPER_NAME, name_size, 2.15, NAVY)
+    cv.rect(right - box_w, 26, right, 88, INK)
+    draw_text_centered(cv, right - box_w / 2, 52, DATE_WEEKDAY, 20, 1.6, WHITE)
+    draw_text_centered(cv, right - box_w / 2, 79, DATE_LINE, 20, 1.6, WHITE)
+    cv.rect(MARGIN, 98, right, 101, INK)
+    cv.rect(MARGIN, 105, right, 110, INK)
+    draw_text_centered(cv, PAGE_W / 2, 132, SOURCE_LINE, 16, 1.25, FAINT)
+    cv.rect(MARGIN, 142, right, 144, INK)
 
+    # Lead story.
+    ly = 158
+    chip = LEAD["chip"]
+    chip_w = text_width(chip, 19, 1.5) + 22
+    cv.rect(MARGIN, ly, MARGIN + chip_w, ly + 30, NAVY)
+    draw_text(cv, MARGIN + 11, ly + 22, chip, 19, 1.5, WHITE)
+    hy = ly + 30 + 58
+    for line in wrap(LEAD["headline"], 58, inner_w, 2.1):
+        draw_text(cv, MARGIN, hy, line, 58, 2.1, INK)
+        hy += 68
+    scene_y = hy - 68 + 24
+    scene_war(cv, MARGIN, scene_y, inner_w, 100)
+    sy = scene_y + 100 + 32
+    for line in wrap(LEAD["summary"], 22.5, inner_w, 1.6):
+        draw_text(cv, MARGIN, sy, line, 22.5, 1.6, INK)
+        sy += 28
 
-def rule(y, thickness=3, color=INK):
-    fill_rect(MARGIN, y, PAGE_W, thickness, color)
+    # Four boxed stories in two rows.
+    tick_y = PAGE_H - MARGIN - 52
+    panel_top = sy + 16
+    gap = 14
+    panel_h = (tick_y - 14 - panel_top - gap) / 2
+    panel_w = (inner_w - gap) / 2
+    for idx, panel in enumerate(PANELS):
+        px = MARGIN + (idx % 2) * (panel_w + gap)
+        py = panel_top + (idx // 2) * (panel_h + gap)
+        tint = PANEL_TINTS[idx]
+        cv.rect(px, py, px + panel_w, py + 4, tint)
+        pchip = panel["chip"]
+        pchip_w = text_width(pchip, 16.5, 1.5) + 18
+        cv.rect(px + 12, py + 12, px + 12 + pchip_w, py + 38, tint)
+        draw_text(cv, px + 21, py + 31, pchip, 16.5, 1.5, WHITE)
+        ICONS[panel["scene"]](cv, px + panel_w - 52, py + 4, 40)
+        hbase = py + 74
+        for line in wrap(panel["headline"], 30, panel_w - 24, 2.0):
+            draw_text(cv, px + 12, hbase, line, 30, 2.0, INK)
+            hbase += 36
+        sbase = hbase + 24
+        for line in wrap(panel["summary"], 19.5, panel_w - 24, 1.55):
+            draw_text(cv, px + 12, sbase, line, 19.5, 1.55, INK)
+            sbase += 24
 
-
-def draw_masthead():
-    draw_text(FINAL_W // 2, 18, KICKER, 3, RED, align="center",
-              weight=1.1)
-    draw_text(FINAL_W // 2, 48, DAY_NAME, 4, INK, align="center",
-              weight=1.15)
-    draw_text(FINAL_W // 2, 90, DATE_LINE, 8, INK, align="center",
-              weight=1.4)
-    rule(160, 5)
-    rule(168, 2)
-    draw_text(FINAL_W // 2, 174, SOURCE_LINE, 2, GREY, align="center")
-
-
-def draw_lead(story):
-    y = 196
-    h = 252
-    fill_rect(MARGIN, y, PAGE_W, h, WHITE)
-    fill_rect(MARGIN, y, PAGE_W, 3, INK)
-    fill_rect(MARGIN, y + h - 3, PAGE_W, 3, INK)
-    # Scene on the left, words on the right.
-    SCENES[story["scene"]](MARGIN + 12, y + 12, 300, h - 24)
-    tx = MARGIN + 328
-    tw = FINAL_W - MARGIN - tx
-    # Tag chip.
-    chip_w = text_width(story["tag"], 3) + 20
-    fill_rect(tx, y + 14, chip_w, 30, story["color"])
-    draw_text(tx + 10, y + 18, story["tag"], 3, WHITE, weight=1.15)
-    # Headline, then summary.
-    hy = draw_text_block(tx, y + 58, story["headline"], 5, INK, tw,
-                         leading=46, weight=1.25)
-    draw_text_block(tx, hy + 6, story["summary"], 3, (52, 52, 66), tw,
-                    leading=29)
-
-
-def draw_panel(x, y, w, h, story):
-    fill_rect(x, y, w, h, WHITE)
-    fill_rect(x, y, w, 3, story["color"])
-    fill_rect(x, y + h - 3, w, 3, LIGHT_LINE)
-    pad = 16
-    # Tag chip on the left; the story's scene at the top right.
-    chip_w = text_width(story["tag"], 2) + 16
-    fill_rect(x + pad, y + 12, chip_w, 24, story["color"])
-    draw_text(x + pad + 8, y + 17, story["tag"], 2, WHITE, weight=1.15)
-    SCENES[story["scene"]](x + w - pad - 88, y + 8, 88, 64)
-    # Headline below the icon row, summary below the headline.
-    hy = draw_text_block(x + pad, y + 84, story["headline"], 4, INK,
-                         w - 2 * pad, leading=36, weight=1.2)
-    draw_text_block(x + pad, hy + 6, story["summary"], 3, (52, 52, 66),
-                    w - 2 * pad, leading=27)
-
-
-def draw_ticker():
-    y = 984
-    fill_rect(MARGIN, y, PAGE_W, 36, INK)
-    draw_text(FINAL_W // 2, y + 11, TICKER, 2, PAPER, align="center",
-              weight=1.1)
-
-
-def render():
-    fill_rect(0, 0, FINAL_W, FINAL_H, PAPER)
-    draw_masthead()
-    draw_lead(LEAD)
-    # Four panels in two rows of two.
-    col_w = (PAGE_W - 16) // 2
-    positions = ((MARGIN, 464), (MARGIN + col_w + 16, 464),
-                 (MARGIN, 724), (MARGIN + col_w + 16, 724))
-    for (px, py), story in zip(positions, STORIES):
-        draw_panel(px, py, col_w, 244, story)
-    draw_ticker()
+    # Ticker along the foot, shrunk until it fits the band.
+    cv.rect(MARGIN, tick_y, right, tick_y + 52, INK)
+    tsize = 24.0
+    while text_width(TICKER, tsize, 1.8) > inner_w - 28 and tsize > 12:
+        tsize -= 0.5
+    draw_text_centered(cv, PAGE_W / 2, tick_y + 36, TICKER, tsize, 1.8, WHITE)
+    return cv
 
 
-# =====================================================================
-# PNG ENCODING -- downsample, then store with zlib.  Fixed settings
-# only, so the bytes are identical on every run.
-# =====================================================================
-
-def downsample():
-    out = bytearray(FINAL_W * FINAL_H * 3)
-    for fy in range(FINAL_H):
-        top = (2 * fy) * W * 3
-        for fx in range(FINAL_W):
-            i = top + 2 * fx * 3
-            j = (fy * FINAL_W + fx) * 3
-            for c in range(3):
-                out[j + c] = (buf[i + c] + buf[i + 3 + c] +
-                              buf[i + W * 3 + c] + buf[i + W * 3 + 3 + c]) // 4
-    return out
-
-
-def png_bytes(pixels):
-    def chunk(kind, data):
-        return (struct.pack(">I", len(data)) + kind + data +
-                struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
-
+def save_png(cv, path):
     raw = bytearray()
-    stride = FINAL_W * 3
-    for fy in range(FINAL_H):
+    row = cv.w * 3
+    for y in range(cv.h):
         raw.append(0)
-        raw += pixels[fy * stride:(fy + 1) * stride]
-    ihdr = struct.pack(">IIBBBBB", FINAL_W, FINAL_H, 8, 2, 0, 0, 0)
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) +
-            chunk(b"IDAT", zlib.compress(bytes(raw), 9)) +
-            chunk(b"IEND", b""))
+        raw += cv.px[y * row:(y + 1) * row]
+
+    def chunk(tag, data):
+        out = struct.pack(">I", len(data)) + tag + data
+        return out + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", cv.w, cv.h, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+    png += chunk(b"IEND", b"")
+    with open(path, "wb") as fh:
+        fh.write(png)
 
 
 def main():
-    render()
-    data = png_bytes(downsample())
     out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "entry.png"), "wb") as fh:
-        fh.write(data)
+    save_png(build_page(), os.path.join(out_dir, "entry.png"))
 
 
 if __name__ == "__main__":
