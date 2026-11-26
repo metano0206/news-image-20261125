@@ -23,13 +23,11 @@ import struct
 import zlib
 
 # ----------------------------------------------------------------------
-# NEWS DATA (placeholder for tonight's draft)
+# NEWS DATA - the verified world news of 25 November 2026.
 #
-# PLACEHOLDER: the five stories and the ticker below are the main items
-# of 24 November 2026, kept here only so the page can be composed and
-# checked tonight.  They will be replaced with the verified news of
-# 25 November 2026 before the final submission.  The date line already
-# names the target day.
+# Each story below was checked against at least two independent
+# reports (Reuters, AP, WSJ, Al Jazeera, Ukrainska Pravda and others)
+# before it was put on the page.
 # ----------------------------------------------------------------------
 PAPER_NAME = "ONE PAGE WORLD"
 DATE_WEEKDAY = "WEDNESDAY"
@@ -37,41 +35,41 @@ DATE_LINE = "25 NOVEMBER 2026"
 SOURCE_LINE = "THE DAY'S WORLD NEWS ON ONE PAGE - AS REPORTED BY REUTERS, AP, AFP AND SCMP"
 
 LEAD = {
-    "chip": "EUROPE - WAR IN UKRAINE",
-    "headline": "RUSSIAN STRIKES KILL AT LEAST 14 NEAR KYIV",
-    "summary": "A FIVE-STOREY HOME COLLAPSED IN DYMER. RESCUERS KEPT "
-               "DIGGING THROUGH THE RUBBLE AS THE TOLL ROSE.",
+    "chip": "MIDDLE EAST - STRAIT OF HORMUZ",
+    "headline": "IRAN SAYS TWO TANKERS HIT MINES IN HORMUZ",
+    "summary": "TEHRAN SAID BOTH SHIPS EXPLODED AND CAUGHT FIRE ON AN "
+               "UNAUTHORISED ROUTE. OIL PRICES ROSE.",
     "scene": "war",
 }
 
 PANELS = [
     {
-        "chip": "BUSINESS - TECH",
-        "headline": "NVIDIA REINSTATES HUANG AS CEO",
-        "summary": "BACK AT THE TOP JOB. SHARES LEAPT 31.5% IN A DAY.",
+        "chip": "TECH - US COURT",
+        "headline": "HUAWEI GUILTY OF STEALING SECRETS",
+        "summary": "GUILTY OF BANK FRAUD TOO. CLEARED OF RACKETEERING.",
         "scene": "chip",
     },
     {
-        "chip": "CLIMATE",
-        "headline": "COP31 TALKS COLLAPSE, NO DEAL",
-        "summary": "THE EU REJECTED A FINAL TEXT THAT DROPPED FOSSIL FUELS.",
+        "chip": "MARKETS - ASIA",
+        "headline": "ASIAN STOCKS PLUNGE ON AI DOUBTS",
+        "summary": "SEOUL'S KOSPI TUMBLED 6.2%. TOKYO'S NIKKEI FELL 2.8%.",
         "scene": "globe",
     },
     {
-        "chip": "AMERICA",
-        "headline": "DEMOCRATS WIN 258 HOUSE SEATS",
-        "summary": "THE BIGGEST MAJORITY SINCE 1992. THE SENATE FELL TOO.",
+        "chip": "AMERICA - TRADE",
+        "headline": "US PROPOSES TARIFFS ON 14 PARTNERS",
+        "summary": "HEADLINE RATES OF 20 TO 40%. CHINA FACES THE HIGHEST.",
         "scene": "capitol",
     },
     {
-        "chip": "ASIA - INDONESIA",
-        "headline": "FACTORY FIRE KILLS AT LEAST 26",
-        "summary": "THE TOLL ROSE AT THE BANTEN CANDY FACTORY. 8 MISSING.",
+        "chip": "EUROPE - WAR IN UKRAINE",
+        "headline": "TWO RUSSIAN REFINERIES SET ABLAZE",
+        "summary": "ROSNEFT'S SYZRAN AND KUIBYSHEV PLANTS BURNED. ONE KILLED.",
         "scene": "factory",
     },
 ]
 
-TICKER = "ALSO TODAY: OREGON AND VIRGINIA SUE SPACEX OVER SEXUALISED GROK AI IMAGES"
+TICKER = "ALSO TODAY: SHENZHOU-24 DOCKS WITH TIANGONG, CARRYING PAKISTAN'S FIRST ASTRONAUT INTO ORBIT"
 
 # ----------------------------------------------------------------------
 # Page geometry and palette (all sizes in pixels, canvas 1024 x 1024)
